@@ -310,6 +310,7 @@ if __name__ == "__main__":
 	if ref_transforms:
 		testbed.fov_axis = 0
 		testbed.fov = ref_transforms["camera_angle_x"] * 180 / np.pi
+		testbed.background_color = [1.0, 1.0, 1.0, 1.0]
 		if not args.screenshot_frames:
 			args.screenshot_frames = range(len(ref_transforms["frames"]))
 		print(args.screenshot_frames)
@@ -317,16 +318,24 @@ if __name__ == "__main__":
 			f = ref_transforms["frames"][int(idx)]
 			cam_matrix = f["transform_matrix"]
 			testbed.set_nerf_camera_matrix(np.matrix(cam_matrix)[:-1,:])
-			outname = os.path.join(args.screenshot_dir, os.path.basename(f["file_path"]))
+			outname = os.path.join(args.screenshot_dir, "%03d"%(idx))
 
 			# Some NeRF datasets lack the .png suffix in the dataset metadata
 			if not os.path.splitext(outname)[1]:
 				outname = outname + ".png"
 
 			print(f"rendering {outname}")
+			ref_im_name = os.path.join(os.path.dirname(args.screenshot_transforms), f["file_path"] + '.png')
+			ref_image = read_image(ref_im_name)
+			ref_image += (1.0 - ref_image[...,3:4]) * testbed.background_color
+			if 'w' not in ref_transforms and args.width == 0:
+				ref_transforms['w'], ref_transforms['h'] = ref_image.shape[:2]
 			image = testbed.render(args.width or int(ref_transforms["w"]), args.height or int(ref_transforms["h"]), args.screenshot_spp, True)
+			image_out = np.concatenate((ref_image, image), axis = 1)
 			os.makedirs(os.path.dirname(outname), exist_ok=True)
-			write_image(outname, image)
+			write_image(outname, image_out)
+		video_out_name = os.path.join(args.screenshot_dir, "test.mp4")
+		os.system(f"ffmpeg -y -framerate 30 -i {args.screenshot_dir}/%03d.png -c:v libx264 -r 30 -pix_fmt yuv420p {video_out_name}")
 	elif args.screenshot_dir:
 		outname = os.path.join(args.screenshot_dir, args.scene + "_" + network_stem)
 		print(f"Rendering {outname}.png")

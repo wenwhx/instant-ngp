@@ -150,8 +150,16 @@ if (NGP_BUILD_WITH_GUI)
 		list(APPEND NGP_LIBRARIES opengl32 $<TARGET_OBJECTS:glfw_objects>)
 	else()
 		find_package(GLEW REQUIRED)
+		find_library(OPENGL_gl_LIBRARY
+			NAMES GL OSMesa
+			PATHS /opt/graphics/OpenGL/lib
+              	  /usr/openwin/lib
+            	  /usr/shlib
+              	  ${_OPENGL_LIB_PATH}
+      		PATH_SUFFIXES libglvnd
+		)
 		list(APPEND NGP_INCLUDE_DIRECTORIES ${GLEW_INCLUDE_DIRS})
-		list(APPEND NGP_LIBRARIES GL ${GLEW_LIBRARIES} $<TARGET_OBJECTS:glfw_objects>)
+		list(APPEND NGP_LIBRARIES ${OPENGL_gl_LIBRARY} ${GLEW_LIBRARIES} $<TARGET_OBJECTS:glfw_objects>)
 	endif()
 
 	list(APPEND GUI_SOURCES
@@ -213,6 +221,7 @@ list(APPEND NGP_DEFINITIONS -DNGP_VERSION="${NGP_VERSION}")
 list(APPEND NGP_INCLUDE_DIRECTORIES "include")
 if (NOT MSVC)
 	list(APPEND NGP_LIBRARIES ${CMAKE_DL_LIBS})
+	message(WARNING "${NGP_LIBRARIES}")
 endif()
 list(APPEND NGP_SOURCES
 	${GUI_SOURCES}
