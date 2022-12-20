@@ -16,6 +16,7 @@ import numpy as np
 
 import shutil
 import time
+import random
 
 from common import *
 from scenes import *
@@ -23,6 +24,8 @@ from scenes import *
 from tqdm import tqdm
 
 import pyngp as ngp # noqa
+
+import matplotlib.pyplot as plt
 
 def parse_args():
 	parser = argparse.ArgumentParser(description="Run neural graphics primitives testbed with additional configuration & output options")
@@ -64,6 +67,9 @@ def parse_args():
 	parser.add_argument("--second_window", action="store_true", help="Open a second window containing a copy of the main output.")
 
 	parser.add_argument("--sharpen", default=0, help="Set amount of sharpening applied to NeRF training images. Range 0.0 to 1.0.")
+	
+	parser.add_argument("--eval_view_quantity", type=bool, default=False, help="Evaluate the effects of view quantity.")
+	parser.add_argument("--views", type=int, default=5, help="view quantity if do the view quantity abliation study")
 
 
 	return parser.parse_args()
@@ -112,7 +118,29 @@ if __name__ == "__main__":
 		scene = args.scene
 		if not os.path.exists(args.scene) and args.scene in scenes:
 			scene = os.path.join(scenes[args.scene]["data_dir"], scenes[args.scene]["dataset"])
-		testbed.load_training_data(scene)
+		if args.eval_view_quantity and args.mode == "nerf":
+			print(scene)
+			with open(scene, 'r') as f:
+				base_json = json.load(f)
+				cur_json = dict()
+				cur_json["camera_angle_x"] = base_json["camera_angle_x"]
+				cur_json["frames"] = []
+				
+				# shuffle frames
+				random_frames = base_json["frames"]
+				random.shuffle(random_frames)
+				cur_json["frames"] = random_frames[:args.views]
+				print("Train with {} input images...".format(len(cur_json["frames"])))
+
+				cur_json_file = scene.replace("_train", "_train_random")
+				print(cur_json_file)
+				with open(cur_json_file, "w") as dst_file:
+					json.dump(cur_json, dst_file)
+				if os.path.exists(cur_json_file):
+					testbed.load_training_data(cur_json_file)
+					#os.system("rm {}".format(cur_json_file))
+		else:
+			testbed.load_training_data(scene)
 
 	if args.gui:
 		# Pick a sensible GUI resolution depending on arguments.
@@ -297,10 +325,26 @@ if __name__ == "__main__":
 				totcount = totcount+1
 				t.set_postfix(psnr = totpsnr/(totcount or 1))
 
+				outname = os.path.join(args.screenshot_dir, "%03d"%(i))
+				if not os.path.splitext(outname)[1]:
+					outname = outname + ".png"
+				os.makedirs(os.path.dirname(outname), exist_ok=True)
+				plt.figure(figsize=(10,4))
+				plt.subplot(121)
+				plt.imshow(ref_image)
+				plt.title(f'ref')
+				plt.subplot(122)
+				plt.imshow(image)
+				plt.title(f'recon PSNR={psnr} SSIM={ssim}')
+				plt.savefig(outname)
+				plt.close()
+
 		psnr_avgmse = mse2psnr(totmse/(totcount or 1))
 		psnr = totpsnr/(totcount or 1)
 		ssim = totssim/(totcount or 1)
-		print(f"PSNR={psnr} [min={minpsnr} max={maxpsnr}] SSIM={ssim}")
+		print(f"avg: PSNR={psnr} [min={minpsnr} max={maxpsnr}] SSIM={ssim}")
+		with open(os.path.dirname(outname)+"/test.log", "a") as log_f:
+			log_f.write(f"avg: PSNR={psnr} [min={minpsnr} max={maxpsnr}] SSIM={ssim}")
 
 	if args.save_mesh:
 		res = args.marching_cubes_res or 256
