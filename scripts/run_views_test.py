@@ -18,6 +18,8 @@ import shutil
 import time
 import random
 
+import csv
+
 from common import *
 from scenes import *
 
@@ -36,6 +38,7 @@ def parse_args():
 
 	parser.add_argument("--load_snapshot", default="", help="Load this snapshot before training. recommended extension: .msgpack")
 	parser.add_argument("--save_snapshot", default="", help="Save this snapshot after training. recommended extension: .msgpack")
+	parser.add_argument("--train_dir", default="", help="Save training output csv and snapshot. recommended snapshot's extension: .msgpack")
 
 	parser.add_argument("--nerf_compatibility", action="store_true", help="Matches parameters with original NeRF. Can cause slowness and worse results on some scenes.")
 	parser.add_argument("--test_transforms", default="", help="Path to a nerf style transforms json from which we will compute PSNR.")
@@ -114,33 +117,22 @@ if __name__ == "__main__":
 	if mode == ngp.TestbedMode.Sdf:
 		testbed.tonemap_curve = ngp.TonemapCurve.ACES
 
+	scene = args.scene
 	if args.scene:
-		scene = args.scene
 		if not os.path.exists(args.scene) and args.scene in scenes:
 			scene = os.path.join(scenes[args.scene]["data_dir"], scenes[args.scene]["dataset"])
 		if args.eval_view_quantity and args.mode == "nerf":
-			print(scene)
 			with open(scene, 'r') as f:
+				target_scene = scene.replace("_train", "_train_random")
 				base_json = json.load(f)
-				cur_json = dict()
-				cur_json["camera_angle_x"] = base_json["camera_angle_x"]
-				cur_json["frames"] = []
-				
-				# shuffle frames
-				random_frames = base_json["frames"]
-				random.shuffle(random_frames)
-				cur_json["frames"] = random_frames[:args.views]
-				print("Train with {} input images...".format(len(cur_json["frames"])))
+				random.shuffle(base_json["frames"])
+				base_json["frames"] = base_json["frames"][:args.views]
+				with open(target_scene, "w") as dst_file:
+					json.dump(base_json, dst_file)
+				if os.path.exists(target_scene):
+					scene = target_scene
 
-				cur_json_file = scene.replace("_train", "_train_random")
-				print(cur_json_file)
-				with open(cur_json_file, "w") as dst_file:
-					json.dump(cur_json, dst_file)
-				if os.path.exists(cur_json_file):
-					testbed.load_training_data(cur_json_file)
-					#os.system("rm {}".format(cur_json_file))
-		else:
-			testbed.load_training_data(scene)
+		testbed.load_training_data(scene)
 
 	if args.gui:
 		# Pick a sensible GUI resolution depending on arguments.
@@ -213,6 +205,10 @@ if __name__ == "__main__":
 		n_steps = 35000
 
 	tqdm_last_update = 0
+
+	# Training
+	training_output_list = []
+	training_output_header = ['iter', 'loss_type', 'loss']
 	if n_steps > 0:
 		with tqdm(desc="Training", total=n_steps, unit="step") as t:
 			loss_type = None
@@ -237,11 +233,47 @@ if __name__ == "__main__":
 					t.set_postfix(loss=testbed.loss)
 					old_training_step = testbed.training_step
 					tqdm_last_update = now
+				
+				if testbed.training_step % 10 == 0:
+					training_output_list.append([
+						testbed.training_step,
+						testbed.nerf.training.loss_type,
+						testbed.loss
+					])
 
+	
 	if args.save_snapshot:
 		print("Saving snapshot ", args.save_snapshot)
 		testbed.save_snapshot(args.save_snapshot, False)
+	elif args.train_dir:
+		if not os.path.exists(args.train_dir):
+			print("current train_dir does not exist, create it")
+			os.makedirs(args.train_dir)
+		cur_iter = testbed.training_step
+		cur_time = time.strftime("%Y%m%d%H%M%S", time.gmtime())
+		cur_train_dir = os.path.join(args.train_dir, str(cur_time))
+		if not os.path.exists(cur_train_dir):
+			os.makedirs(cur_train_dir)
+			print("make dir ", cur_train_dir)
 
+		# save snapshot
+		cur_save_snapshot = os.path.join(cur_train_dir, "snapshot_" + str(cur_iter) + ".msgpack")
+		print("Saving snapshot ", cur_save_snapshot)
+		testbed.save_snapshot(cur_save_snapshot, False)
+
+		# save used train_transform.json
+		shutil.copy(scene, cur_train_dir)
+
+		# save train output csv
+		cur_train_csv = os.path.join(cur_train_dir, "train_data.csv")
+		with open(cur_train_csv, "w", newline="") as train_output:
+			train_output_writer = csv.writer(train_output, delimiter=" ",
+																			 quotechar="|", quoting=csv.QUOTE_MINIMAL)
+
+			train_output_writer.writerow(training_output_header)
+			for row in training_output_list:
+				train_output_writer.writerow(row)
+				
 	if args.test_transforms:
 		print("Evaluating test transforms from ", args.test_transforms)
 		with open(args.test_transforms) as f:

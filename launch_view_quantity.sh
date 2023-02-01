@@ -5,7 +5,7 @@ echo GPU $1
 echo snapshot dir: $2
 echo screenshot dir: $3
 
-SCENE=chair
+SCENE=materials
 CKPT_DIR=$2/$SCENE
 mkdir -p $CKPT_DIR
 
