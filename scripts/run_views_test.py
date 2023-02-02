@@ -39,6 +39,7 @@ def parse_args():
 	parser.add_argument("--load_snapshot", default="", help="Load this snapshot before training. recommended extension: .msgpack")
 	parser.add_argument("--save_snapshot", default="", help="Save this snapshot after training. recommended extension: .msgpack")
 	parser.add_argument("--train_dir", default="", help="Save training output csv and snapshot. recommended snapshot's extension: .msgpack")
+	parser.add_argument("--data_dir", default="", help="Path to access data. Only works in the test phase.")
 
 	parser.add_argument("--nerf_compatibility", action="store_true", help="Matches parameters with original NeRF. Can cause slowness and worse results on some scenes.")
 	parser.add_argument("--test_transforms", default="", help="Path to a nerf style transforms json from which we will compute PSNR.")
@@ -248,13 +249,17 @@ if __name__ == "__main__":
 	elif args.train_dir:
 		if not os.path.exists(args.train_dir):
 			print("current train_dir does not exist, create it")
-			os.makedirs(args.train_dir)
+			exit(0)
+
+		# set up output dir
 		cur_iter = testbed.training_step
 		cur_time = time.strftime("%Y%m%d%H%M%S", time.gmtime())
 		cur_train_dir = os.path.join(args.train_dir, str(cur_time))
 		if not os.path.exists(cur_train_dir):
 			os.makedirs(cur_train_dir)
 			print("make dir ", cur_train_dir)
+			if not os.path.exists(cur_train_dir):
+				exit(0)
 
 		# save snapshot
 		cur_save_snapshot = os.path.join(cur_train_dir, "snapshot_" + str(cur_iter) + ".msgpack")
@@ -278,7 +283,9 @@ if __name__ == "__main__":
 		print("Evaluating test transforms from ", args.test_transforms)
 		with open(args.test_transforms) as f:
 			test_transforms = json.load(f)
-		data_dir=os.path.dirname(args.test_transforms)
+		data_dir = args.data_dir
+		if data_dir == "":
+			data_dir=os.path.dirname(args.test_transforms)
 		totmse = 0
 		totpsnr = 0
 		totssim = 0
@@ -299,6 +306,9 @@ if __name__ == "__main__":
 		testbed.fov_axis = 0
 		testbed.fov = test_transforms["camera_angle_x"] * 180 / np.pi
 		testbed.shall_train = False
+		
+		test_results = []
+		test_result_fields = ["test_view", "psnr", "ssim", "recon_image"]
 
 		with tqdm(list(enumerate(test_transforms["frames"])), unit="images", desc=f"Rendering test frame") as t:
 			for i, frame in t:
@@ -331,19 +341,19 @@ if __name__ == "__main__":
 					ref_image += (1.0 - ref_image[...,3:4]) * testbed.background_color
 					ref_image[...,:3] = srgb_to_linear(ref_image[...,:3])
 
-				if i == 0:
-					write_image("ref.png", ref_image)
+				# if i == 0:
+				# 	write_image("ref.png", ref_image)
 
 				testbed.set_nerf_camera_matrix(np.matrix(frame["transform_matrix"])[:-1,:])
 				image = testbed.render(ref_image.shape[1], ref_image.shape[0], spp, True)
 
-				if i == 0:
-					write_image("out.png", image)
+				# if i == 0:
+				# 	write_image("out.png", image)
 
-				diffimg = np.absolute(image - ref_image)
-				diffimg[...,3:4] = 1.0
-				if i == 0:
-					write_image("diff.png", diffimg)
+				# diffimg = np.absolute(image - ref_image)
+				# diffimg[...,3:4] = 1.0
+				# if i == 0:
+				# 	write_image("diff.png", diffimg)
 
 				A = np.clip(linear_to_srgb(image[...,:3]), 0.0, 1.0)
 				R = np.clip(linear_to_srgb(ref_image[...,:3]), 0.0, 1.0)
@@ -358,68 +368,85 @@ if __name__ == "__main__":
 				totcount = totcount+1
 				t.set_postfix(psnr = totpsnr/(totcount or 1))
 
-				outname = os.path.join(args.screenshot_dir, "%03d"%(i))
-				if not os.path.splitext(outname)[1]:
-					outname = outname + ".png"
-				os.makedirs(os.path.dirname(outname), exist_ok=True)
-				plt.figure(figsize=(10,4))
-				plt.subplot(121)
-				plt.imshow(ref_image)
-				plt.title(f'ref')
-				plt.subplot(122)
-				plt.imshow(image)
-				plt.title(f'recon PSNR={psnr} SSIM={ssim}')
-				plt.savefig(outname)
-				plt.close()
+				# save rendered image
+				render_image_name = os.path.split(frame["file_path"])[1] + os.path.splitext(ref_fname)[1]
+				render_path = os.path.join(args.screenshot_dir, render_image_name)
+				write_image(render_path, image)
+
+				test_results.append({
+					"test_view" : frame["file_path"],
+					"psnr" : psnr,
+					"ssim" : ssim,
+					"recon_image" : render_image_name
+				})
+
+				# outname = os.path.join(args.screenshot_dir, "%03d"%(i))
+				# if not os.path.splitext(outname)[1]:
+				# 	outname = outname + ".png"
+				# os.makedirs(os.path.dirname(outname), exist_ok=True)
+				# plt.figure(figsize=(10,4))
+				# plt.subplot(121)
+				# plt.imshow(ref_image)
+				# plt.title(f'ref')
+				# plt.subplot(122)
+				# plt.imshow(image)
+				# plt.title(f'recon PSNR={psnr} SSIM={ssim}')
+				# plt.savefig(outname)
+				# plt.close()
 
 		psnr_avgmse = mse2psnr(totmse/(totcount or 1))
 		psnr = totpsnr/(totcount or 1)
 		ssim = totssim/(totcount or 1)
 		print(f"avg: PSNR={psnr} [min={minpsnr} max={maxpsnr}] SSIM={ssim}")
-		with open(os.path.dirname(outname)+"/test.log", "a") as log_f:
-			log_f.write(f"avg: PSNR={psnr} [min={minpsnr} max={maxpsnr}] SSIM={ssim}")
+		
+		test_csv = os.path.join(args.screenshot_dir, "test_data.csv")
+		with open(test_csv, "w", newline="") as test_output:
+			test_output_writer = csv.DictWriter(test_output, fieldnames=test_result_fields, delimiter=' ')
+			test_output_writer.writeheader()
+			for r in test_results:
+				test_output_writer.writerow(r)
 
 	if args.save_mesh:
 		res = args.marching_cubes_res or 256
 		print(f"Generating mesh via marching cubes and saving to {args.save_mesh}. Resolution=[{res},{res},{res}]")
 		testbed.compute_and_save_marching_cubes_mesh(args.save_mesh, [res, res, res])
 
-	if ref_transforms:
-		testbed.fov_axis = 0
-		testbed.fov = ref_transforms["camera_angle_x"] * 180 / np.pi
-		testbed.background_color = [1.0, 1.0, 1.0, 1.0]
-		if not args.screenshot_frames:
-			args.screenshot_frames = range(len(ref_transforms["frames"]))
-		print(args.screenshot_frames)
-		for idx in args.screenshot_frames:
-			f = ref_transforms["frames"][int(idx)]
-			cam_matrix = f["transform_matrix"]
-			testbed.set_nerf_camera_matrix(np.matrix(cam_matrix)[:-1,:])
-			outname = os.path.join(args.screenshot_dir, "%03d"%(idx))
+	# if ref_transforms:
+	# 	testbed.fov_axis = 0
+	# 	testbed.fov = ref_transforms["camera_angle_x"] * 180 / np.pi
+	# 	testbed.background_color = [1.0, 1.0, 1.0, 1.0]
+	# 	if not args.screenshot_frames:
+	# 		args.screenshot_frames = range(len(ref_transforms["frames"]))
+	# 	print(args.screenshot_frames)
+	# 	for idx in args.screenshot_frames:
+	# 		f = ref_transforms["frames"][int(idx)]
+	# 		cam_matrix = f["transform_matrix"]
+	# 		testbed.set_nerf_camera_matrix(np.matrix(cam_matrix)[:-1,:])
+	# 		outname = os.path.join(args.screenshot_dir, "%03d"%(idx))
 
-			# Some NeRF datasets lack the .png suffix in the dataset metadata
-			if not os.path.splitext(outname)[1]:
-				outname = outname + ".png"
+	# 		# Some NeRF datasets lack the .png suffix in the dataset metadata
+	# 		if not os.path.splitext(outname)[1]:
+	# 			outname = outname + ".png"
 
-			print(f"rendering {outname}")
-			ref_im_name = os.path.join(os.path.dirname(args.screenshot_transforms), f["file_path"] + '.png')
-			ref_image = read_image(ref_im_name)
-			ref_image += (1.0 - ref_image[...,3:4]) * testbed.background_color
-			if 'w' not in ref_transforms and args.width == 0:
-				ref_transforms['w'], ref_transforms['h'] = ref_image.shape[:2]
-			image = testbed.render(args.width or int(ref_transforms["w"]), args.height or int(ref_transforms["h"]), args.screenshot_spp, True)
-			image_out = np.concatenate((ref_image, image), axis = 1)
-			os.makedirs(os.path.dirname(outname), exist_ok=True)
-			write_image(outname, image_out)
-		video_out_name = os.path.join(args.screenshot_dir, "test.mp4")
-		os.system(f"ffmpeg -y -framerate 30 -i {args.screenshot_dir}/%03d.png -c:v libx264 -r 30 -pix_fmt yuv420p {video_out_name}")
-	elif args.screenshot_dir:
-		outname = os.path.join(args.screenshot_dir, args.scene + "_" + network_stem)
-		print(f"Rendering {outname}.png")
-		image = testbed.render(args.width or 1920, args.height or 1080, args.screenshot_spp, True)
-		if os.path.dirname(outname) != "":
-			os.makedirs(os.path.dirname(outname), exist_ok=True)
-		write_image(outname + ".png", image)
+	# 		print(f"rendering {outname}")
+	# 		ref_im_name = os.path.join(os.path.dirname(args.screenshot_transforms), f["file_path"] + '.png')
+	# 		ref_image = read_image(ref_im_name)
+	# 		ref_image += (1.0 - ref_image[...,3:4]) * testbed.background_color
+	# 		if 'w' not in ref_transforms and args.width == 0:
+	# 			ref_transforms['w'], ref_transforms['h'] = ref_image.shape[:2]
+	# 		image = testbed.render(args.width or int(ref_transforms["w"]), args.height or int(ref_transforms["h"]), args.screenshot_spp, True)
+	# 		image_out = np.concatenate((ref_image, image), axis = 1)
+	# 		os.makedirs(os.path.dirname(outname), exist_ok=True)
+	# 		write_image(outname, image_out)
+	# 	video_out_name = os.path.join(args.screenshot_dir, "test.mp4")
+	# 	os.system(f"ffmpeg -y -framerate 30 -i {args.screenshot_dir}/%03d.png -c:v libx264 -r 30 -pix_fmt yuv420p {video_out_name}")
+	# elif args.screenshot_dir:
+	# 	outname = os.path.join(args.screenshot_dir, args.scene + "_" + network_stem)
+	# 	print(f"Rendering {outname}.png")
+	# 	image = testbed.render(args.width or 1920, args.height or 1080, args.screenshot_spp, True)
+	# 	if os.path.dirname(outname) != "":
+	# 		os.makedirs(os.path.dirname(outname), exist_ok=True)
+	# 	write_image(outname + ".png", image)
 
 	if args.video_camera_path:
 		testbed.load_camera_path(args.video_camera_path)
